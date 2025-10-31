@@ -8,55 +8,110 @@
 (async function() {
   const url = "https://ggfxdh.csb.app/";
 
-  // Phát hiện thiết bị
+  // Phát hiện thiết bị & trình duyệt
   const isMobile = /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+  // Xác định Chrome (loại trừ Edge, Opera, Brave, WebView, Safari trên iOS)
+  const isChrome = /Chrome/.test(navigator.userAgent) &&
+                   !/Edg|OPR|Opera|Brave|CriOS|Chromium/.test(navigator.userAgent);
 
-  // --- Cách 1: chuyển luôn sang trang preview ---
-  // (đây là mức tự động cao nhất mà trình duyệt cho phép)
-  window.location.replace(url);
-
-  // --- Cách 2: nếu bạn muốn giữ file này mở và inject script ---
-  // ❗ Chú ý: inject cross-origin KHÔNG chạy được trong hầu hết trình duyệt do bảo mật
-  // Mình để code dưới để bạn thấy rõ logic thực hiện bên trong trang preview.
-  const autoScript = `
-    (function(){
+  // Hàm thử mở bằng custom protocol (các hệ điều hành khác nhau có thể đăng ký khác nhau)
+  function tryOpenChromeViaProtocol(targetUrl) {
+    // Một số schemes được dùng trên các nền tảng khác nhau — thử lần lượt
+    const schemes = [
+      'googlechrome://navigate?url=',   // đôi khi trên Windows / macOS
+      'googlechrome://',                // macOS có thể chấp nhận googlechrome://<url>
+      'google-chrome://open-url?url=',  // một số phiên bản
+      'googlechrome://open?url='
+    ];
+    // tạo iframe để cố gắng gọi custom protocol (cách thường dùng để avoid popup)
+    for (let i = 0; i < schemes.length; i++) {
       try {
-        var isMobile = ${isMobile};
-        function findBtn(){
-          var btns = document.querySelectorAll('button, a, [role="button"]');
-          for (var i=0;i<btns.length;i++){
-            var t=(btns[i].innerText||'').toLowerCase();
-            if(t.includes('proceed')||t.includes('continue')||t.includes('yes')){
-              return btns[i];
-            }
-          }
-          return null;
-        }
-        function clickOnce(b){
-          try{ b.focus(); b.click(); console.log('Clicked preview'); }catch(e){}
-        }
-        var b=findBtn();
-        if(b){ clickOnce(b); }else{
-          var obs=new MutationObserver(()=>{var c=findBtn(); if(c){clickOnce(c); obs.disconnect();}});
-          obs.observe(document.documentElement,{childList:true,subtree:true});
-        }
-        if(!isMobile){
-          document.documentElement.style.zoom='50%';
-        }
-      }catch(e){console.error(e);}
-    })();`;
+        const s = schemes[i] + encodeURIComponent(targetUrl);
+        const ifr = document.createElement('iframe');
+        ifr.style.display = 'none';
+        ifr.src = s;
+        document.body.appendChild(ifr);
+        // xóa iframe sau 2s để dọn dẹp
+        setTimeout(()=>{ try { document.body.removeChild(ifr); } catch(e){} }, 2000);
+      } catch(e){
+        console.warn('Protocol attempt failed for', schemes[i], e);
+      }
+    }
+  }
 
-  // Dưới đây chỉ là tham khảo (sẽ bị chặn trong cross-origin)
+  // Nếu đang chạy trên Chrome -> chuyển thẳng (giữ hành vi gốc)
+  if (isChrome) {
+    // phương án tự động cao nhất:
+    window.location.replace(url);
+    return;
+  }
+
+  // Nếu không phải Chrome -> cố gắng mở Chrome rồi fallback
   try {
-    const win = window.open(url, "_self"); // mở cùng tab
-    win.eval(autoScript); // sẽ bị chặn trong Chrome do cross-origin
+    // 1) Thử mở Chrome bằng scheme (nếu hệ thống có đăng ký, nó sẽ hỏi hoặc mở)
+    tryOpenChromeViaProtocol(url);
+
+    // 2) Thử window.open với intent-like URL (Android / Chrome on Android hỗ trợ intent:)
+    // (một số trình duyệt Android có thể hỗ trợ)
+    try {
+      // intent: chỉ dành cho Android Chrome — không gây lỗi trên desktop
+      const intentUrl = 'intent://' + url.replace(/^https?:\/\//, '') +
+                        '#Intent;package=com.android.chrome;scheme=https;end';
+      // mở trong cùng tab (nếu bị chặn thì trả về null)
+      window.open(intentUrl, '_self');
+    } catch(e) {}
+
+    // 3) Hiển thị UI cho người dùng kèm fallback: nếu trong 1.5s không có chuyển sang Chrome,
+    // mở bản preview trong trình duyệt hiện tại (fallback).
+    const fallbackTimeout = 1500;
+    let switched = false;
+
+    // Thử mở một cửa sổ (không bắt buộc) — có thể bị popup-blocker
+    try {
+      const w = window.open(url, "_blank");
+      if (w) {
+        // nếu mở được cửa sổ mới thì coi như hành động thành công (mặc dù không phải Chrome)
+        switched = true;
+      }
+    } catch(e){}
+
+    // Sau thời gian chờ, nếu chưa "chuyển" -> hiển thị nút hướng dẫn
+    setTimeout(()=> {
+      if (!switched) {
+        // Thay vì tự động ép, hiển thị giao diện để người dùng bấm “Mở bằng Chrome” hoặc tiếp tục
+        document.body.innerHTML = `
+          <div style="font-family: Arial, sans-serif; padding:24px; max-width:720px; margin:40px auto;">
+            <h2>Ứng dụng muốn mở bằng Google Chrome</h2>
+            <p>Trình duyệt bạn đang dùng không phải Google Chrome. Nếu bạn muốn mở link này bằng Chrome (nếu Chrome đã cài), bấm "Mở bằng Chrome".</p>
+            <p>
+              <button id="openChrome" style="padding:10px 16px; margin-right:8px; cursor:pointer;">Mở bằng Chrome</button>
+              <button id="openHere" style="padding:10px 16px; cursor:pointer;">Mở trong trình duyệt hiện tại</button>
+            </p>
+            <p style="color:#666; font-size:0.9em">Lưu ý: trang web không thể ép hệ điều hành khởi chạy ứng dụng khác nếu hệ thống/chính sách bảo mật chặn. Nếu nút "Mở bằng Chrome" không hoạt động, bạn có thể dùng script/shortcut (mình có hướng dẫn bên dưới) hoặc copy link và dán vào Chrome thủ công.</p>
+          </div>
+        `;
+        document.getElementById('openChrome').addEventListener('click', function(){
+          // Thử mở bằng nhiều cách khi người dùng có tương tác (giảm khả năng bị chặn)
+          tryOpenChromeViaProtocol(url);
+          try { window.location.href = 'googlechrome://navigate?url=' + encodeURIComponent(url); } catch(e){}
+          try { window.location.href = url; } catch(e){}
+        });
+        document.getElementById('openHere').addEventListener('click', function(){
+          window.location.replace(url);
+        });
+      }
+    }, fallbackTimeout);
+
   } catch(e) {
-    console.warn("Không thể inject trực tiếp do chính sách bảo mật. Cần chạy bookmarklet hoặc userscript.");
+    console.error(e);
+    // Nếu có lỗi thì fallback mở trang preview ở trình duyệt hiện tại
+    window.location.replace(url);
   }
 })();
 </script>
 </head>
 <body>
   <h2>Đang chuyển tới trang preview...</h2>
+  <p style="color:#666">Nếu trình duyệt không chuyển tự động, hãy bấm nút "Mở bằng Chrome" khi nó xuất hiện.</p>
 </body>
 </html>
